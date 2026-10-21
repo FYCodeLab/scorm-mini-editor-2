@@ -22,10 +22,17 @@ The earlier stacked reconstruction (text on top, image below, with
 jagged inline red outlines) is gone: red marks are now rectangles
 around whole containers (title, synthesis box, photo), and the
 course's own Back/Next buttons are disabled in edit mode so the iframe
-cannot silently leave the page the arrows selected. Use the
-**Landscape (wide) / Portrait (narrow)** frame toggle above the page:
-portrait keeps the MOOC's two-column layout, so text will be small —
-as on Moodle — rather than reflowing into a single column.
+cannot silently leave the page the arrows selected.
+
+Full-width scaling (updated 2026-10-21): the WYSIWYG is always rendered
+at the MOOC's desktop width (1100px, wider on a wide screen) and
+scaled down uniformly to fit the screen — **the same layout in
+portrait and landscape, no stretching, no narrow-column reflow**. In
+portrait the whole page is visible at once, exactly like a screenshot
+of Moodle, with small text; rotate the phone for a larger view.
+Local images (logo, culture-dish illustration) are inlined as data
+URLs in the preview, because Blob-URL subresources can fail inside a
+sandboxed iframe on iOS Safari and leave the logo blank.
 
 Everything runs in your browser. No backend, account, database or paid API.
 Your SCORM ZIP is never uploaded to GitHub or any server.
@@ -52,6 +59,16 @@ Your SCORM ZIP is never uploaded to GitHub or any server.
   Editable parts on that page (title, summary, photo, caption, quiz
   items where present) get red rectangles; quiz type and points have
   none because they are not editable.
+- **Welcome page texts are editable too** (added 2026-10-21): the title
+  (“Welcome to the Human Cell Culture Mini-MOOC”), subtitle, eyebrow,
+  “Prepare for your practical sessions” heading, both intro paragraphs
+  (“This mini-MOOC will help you…”), the modules notice, “Good luck!”,
+  the photo credit and the bottom bar. They were not editable before
+  because they are hard-coded in the welcome page's template, not in
+  the lesson data — but that template runs only for the Welcome page,
+  so editing it by structure is safe. The same applies to the final
+  page's template texts, which are not yet exposed (no Final page in
+  the page list).
 - **Ordinary multi-page HTML courses:** one page per HTML file, rendered
   by that file's own HTML/CSS/JS in the same sandboxed iframe, with red
   rectangles injected on editable elements.

@@ -114,7 +114,7 @@ describe("ZIP import / export / reimport (synthetic package)", () => {
     const pkg = await importZip(await blob.arrayBuffer(), "sample.zip");
     const preview = await buildPreviewHtml(pkg);
     expect(preview).toContain("window.API");
-    expect(preview).toContain("blob:");
+    expect(preview).toContain("data:image/png;base64,");
   });
 });
 

@@ -30,6 +30,6 @@ describe("Editor 2 faithful WYSIWYG injection", () => {
     const html = await buildPreviewHtml(pkg, undefined, "index.html");
     expect(html).toContain("window.API");
     expect(html).toContain('data-original-src="leaf.png"');
-    expect(html).toContain("blob:");
+    expect(html).toContain("data:image/png;base64,");
   });
 });

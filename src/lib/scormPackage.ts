@@ -105,6 +105,31 @@ export async function exportZip(pkg: ScormPackage): Promise<Blob> {
   return zip.generateAsync({ type: "blob", compression: "DEFLATE", compressionOptions: { level: 6 } });
 }
 
+/**
+ * Convert a Blob to a data: URL (base64). Data URLs, unlike Blob URLs,
+ * load inside a sandboxed iframe (allow-scripts only, opaque origin) on
+ * every browser including iOS Safari, where Blob-URL subresources from
+ * the parent page can fail and leave e.g. the course logo blank.
+ * Only used for files up to 5 MB; larger files fall back to Blob URLs.
+ */
+export async function blobToDataUrl(blob: Blob, mime?: string): Promise<string> {
+  const buf = await blob.arrayBuffer();
+  const bytes = new Uint8Array(buf);
+  let bin = "";
+  const CHUNK = 0x8000;
+  for (let i = 0; i < bytes.length; i += CHUNK) {
+    bin += String.fromCharCode(...bytes.subarray(i, i + CHUNK));
+  }
+  const type = mime ?? blob.type ?? "application/octet-stream";
+  return `data:${type};base64,${btoa(bin)}`;
+}
+
+const MIME_BY_EXT: Record<string, string> = {
+  png: "image/png", jpg: "image/jpeg", jpeg: "image/jpeg", gif: "image/gif",
+  webp: "image/webp", svg: "image/svg+xml", avif: "image/avif", css: "text/css",
+  js: "text/javascript", html: "text/html", json: "application/json",
+};
+
 /** Resolve a relative asset path against the launch file's directory. */
 export function resolveRelative(baseFile: string, ref: string): string {
   if (isExternalUrl(ref) || ref.startsWith("data:") || ref.startsWith("#")) return ref;
@@ -133,33 +158,48 @@ export async function buildPreviewHtml(pkg: ScormPackage, onBlob?: (url: string,
   if (!launch) throw new Error("No HTML file to preview.");
   const file = pkg.files.get(launch) ?? pkg.files.get(decodeURIComponent(launch));
   if (!file?.text) throw new Error(`Launch file "${launch}" has no readable text content.`);
-  const blobUrls = new Map<string, string>();
-  const urlFor = (ref: string): string | null => {
+  const assetUrls = new Map<string, string>();
+  const urlFor = async (ref: string): Promise<string | null> => {
     const resolved = resolveRelative(launch, ref.split("#")[0].split("?")[0]);
     const f = pkg.files.get(resolved);
     if (!f?.blob) return null;
-    if (!blobUrls.has(resolved)) {
-      const url = URL.createObjectURL(f.blob);
-      blobUrls.set(resolved, url);
+    if (!assetUrls.has(resolved)) {
+      const ext = resolved.split(".").pop()?.toLowerCase() ?? "";
+      const url = f.blob.size <= 5 * 1024 * 1024
+        ? await blobToDataUrl(f.blob, MIME_BY_EXT[ext] ?? f.blob.type)
+        : URL.createObjectURL(f.blob);
+      assetUrls.set(resolved, url);
       onBlob?.(url, resolved);
     }
-    return blobUrls.get(resolved)!;
+    return assetUrls.get(resolved)!;
   };
   let html = file.text;
+  // Collect every local src/href and url(...) ref first (async conversion),
+  // then rewrite — a replace callback cannot be async.
+  const refs = new Set<string>();
+  for (const m of html.matchAll(/(?:src|href)\s*=\s*["']([^"']+)["']/gi)) {
+    if (!isExternalUrl(m[1]) && !m[1].startsWith("data:") && !m[1].startsWith("#") && !m[1].startsWith("mailto:")) refs.add(m[1]);
+  }
+  for (const m of html.matchAll(/url\(\s*(["']?)([^"')]+)\1\s*\)/gi)) {
+    if (!isExternalUrl(m[2]) && !m[2].startsWith("data:")) refs.add(m[2]);
+  }
+  const resolvedUrls = new Map<string, string>();
+  for (const ref of refs) {
+    const url = await urlFor(ref);
+    if (url) resolvedUrls.set(ref, url);
+  }
   // Rewrite src/href attributes pointing at local files. For src, keep the
   // original path in data-original-src so Editor 2 can map a click on the
-  // (blob) image back to the package file it replaces.
+  // (data/blob) image back to the package file it replaces.
   html = html.replace(/((?:src|href)\s*=\s*["'])([^"']+)(["'])/gi, (whole, pre, ref, post) => {
-    if (isExternalUrl(ref) || ref.startsWith("data:") || ref.startsWith("#") || ref.startsWith("mailto:")) return whole;
-    const url = urlFor(ref);
+    const url = resolvedUrls.get(ref);
     if (!url) return whole;
     const isSrc = /src/i.test(pre);
     return isSrc ? `${pre}${url}${post} data-original-src="${ref}"` : `${pre}${url}${post}`;
   });
   // Rewrite url(...) in inline <style> blocks.
   html = html.replace(/url\(\s*(["']?)([^"')]+)\1\s*\)/gi, (whole, q, ref) => {
-    if (isExternalUrl(ref) || ref.startsWith("data:")) return whole;
-    const url = urlFor(ref);
+    const url = resolvedUrls.get(ref);
     return url ? `url(${q}${url}${q})` : whole;
   });
   const shim = `<script>

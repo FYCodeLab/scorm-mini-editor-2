@@ -42,6 +42,15 @@ export function buildEditor2Script(info: InjectInfo): string {
   style.textContent = '.e2-red{outline:3px solid #dc2626 !important;outline-offset:2px;cursor:pointer !important}';
   document.head.appendChild(style);
   function textOf(el){ return (el.innerText || el.textContent || '').trim(); }
+  // A rich block's value is HTML (e.g. "…on <b>human tumor…</b>.") while
+  // the on-screen text is plain, and a plain template block may be stored
+  // HTML-escaped (&amp;). Strip tags and decode entities before comparing.
+  function plainOf(value){
+    var noTags = (value || '').replace(/<[^>]+>/g, '');
+    var ta = document.createElement('textarea');
+    ta.innerHTML = noTags;
+    return ta.value.trim();
+  }
   function originalSrc(img){
     var d = img.getAttribute('data-original-src');
     if (d) return d;
@@ -55,7 +64,7 @@ export function buildEditor2Script(info: InjectInfo): string {
       var src = img.getAttribute('src') || '';
       if (!src || src.indexOf('blob:') === 0 || src.indexOf('http') === 0 || src.indexOf('data:') === 0) continue;
       var name = src.split('/').pop().split('?')[0].split('#')[0];
-      if (INFO.localMap[name]) img.src = INFO.localMap[name];
+      if (INFO.localMap[name]){ img.setAttribute('data-original-src', src); img.src = INFO.localMap[name]; }
     }
   }
   function applyRed(){
@@ -63,7 +72,7 @@ export function buildEditor2Script(info: InjectInfo): string {
     var all = Array.prototype.slice.call(document.querySelectorAll('body *'));
     // Blocks: prefer an exact match, else the smallest element containing the full text.
     INFO.blocks.forEach(function(b){
-      var want = (b.text || '').trim();
+      var want = plainOf(b.text);
       if (want.length < 2) return;
       var best = null, bestLen = Infinity;
       for (var i = 0; i < all.length; i++){

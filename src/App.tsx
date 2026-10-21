@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import DOMPurify from "dompurify";
-import { importZip, exportZip, refreshFile, buildPreviewHtml, type ScormPackage } from "./lib/scormPackage";
+import { importZip, exportZip, refreshFile, buildPreviewHtml, blobToDataUrl, type ScormPackage } from "./lib/scormPackage";
 import { applyEdits } from "./lib/editables";
 import { buildPages } from "./lib/pages";
 import { buildSampleZip } from "./lib/sample";
@@ -25,7 +25,24 @@ export default function App() {
   const [dragOver, setDragOver] = useState(false);
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
   const [previewKey, setPreviewKey] = useState(0);
-  const [orientation, setOrientation] = useState<"landscape" | "portrait">("landscape");
+  // Full-width screenshot scaling: the WYSIWYG is always rendered at the
+  // MOOC's desktop width (1100px, or wider on a wide screen) and scaled
+  // down uniformly to fit the container. No narrow-portrait reflow, no
+  // stretching: the same layout in portrait and landscape, text small
+  // in portrait, exactly as a screenshot of Moodle would look.
+  const wrapRef = useRef<HTMLDivElement>(null);
+  const [wrapW, setWrapW] = useState(1100);
+  useEffect(() => {
+    const el = wrapRef.current;
+    if (!el) return;
+    const ro = new ResizeObserver((entries) => { const w = entries[0]?.contentRect.width; if (w && w > 0) setWrapW(w); });
+    ro.observe(el);
+    setWrapW(el.getBoundingClientRect().width || 1100);
+    return () => ro.disconnect();
+  }, [pkg]);
+  const VIEW_W = Math.max(1100, Math.round(wrapW));
+  const VIEW_H = 720;
+  const scale = wrapW > 0 ? wrapW / VIEW_W : 1;
   const fileInput = useRef<HTMLInputElement>(null);
   const replaceInput = useRef<HTMLInputElement>(null);
   const blobUrls = useRef<string[]>([]);
@@ -46,20 +63,10 @@ export default function App() {
   useEffect(() => {
     if (!pkg || !page) return;
     let cancelled = false;
-    const localMap: Record<string, string> = {};
-    const blobMap: Record<string, string> = {};
-    for (const path of pkg.fileList.filter(isImagePath)) {
-      const f = pkg.files.get(path);
-      if (f?.blob) {
-        const url = URL.createObjectURL(f.blob);
-        blobUrls.current.push(url);
-        localMap[path.split("/").pop()!] = url;
-      }
-    }
     const lesson = isJsCourse ? pageIndex - 1 : null;
     const pageBlocks = isJsCourse
       ? pkg.blocks.filter((b) => {
-          if (lesson === -1) return b.kind === "html-title";
+          if (lesson === -1) return b.group === "Welcome";
           const L = (lesson ?? 0) + 1;
           return b.label.startsWith(`Lesson ${L} ·`) || b.label === `readPhotos[${lesson}] · caption`;
         })
@@ -73,8 +80,23 @@ export default function App() {
     // Deduplicate images by src for the injected script.
     const seenImg = new Set<string>();
     const uniqImages = pageImages.filter((im) => { if (seenImg.has(im.src)) return false; seenImg.add(im.src); return true; });
-    buildPreviewHtml(pkg, (url, resolved) => { blobUrls.current.push(url); blobMap[url] = resolved; }, isJsCourse ? undefined : page.file)
-      .then((html) => {
+    (async () => {
+      // Local images as data URLs (not Blob URLs) so they load inside the
+      // sandboxed iframe on iOS Safari, where Blob-URL subresources fail.
+      const localMap: Record<string, string> = {};
+      const blobMap: Record<string, string> = {};
+      for (const path of pkg.fileList.filter(isImagePath)) {
+        const f = pkg.files.get(path);
+        if (f?.blob && f.blob.size <= 5 * 1024 * 1024) {
+          const url = await blobToDataUrl(f.blob);
+          localMap[path.split("/").pop()!] = url;
+          blobMap[url] = path;
+        }
+      }
+      const html = await buildPreviewHtml(pkg, (url, resolved) => { if (url.startsWith("blob:")) blobUrls.current.push(url); blobMap[url] = resolved; }, isJsCourse ? undefined : page.file);
+      return { html, localMap, blobMap };
+    })()
+      .then(({ html, localMap, blobMap }) => {
         if (cancelled) return;
         const script = buildEditor2Script({
           lesson,
@@ -140,7 +162,7 @@ export default function App() {
     const value = selectedBlock.rich ? sanitizeRich(draft) : draft;
     if (value === selectedBlock.value) { setNotice("No change to apply."); return; }
     try {
-      const nextText = applyEdits(file.text, [{ start: selectedBlock.start, end: selectedBlock.end, value, rich: selectedBlock.rich, quote: selectedBlock.quote, js: selectedBlock.js }]);
+      const nextText = applyEdits(file.text, [{ start: selectedBlock.start, end: selectedBlock.end, value, rich: selectedBlock.rich, quote: selectedBlock.quote, js: selectedBlock.js, template: selectedBlock.template }]);
       const updated = new Map(pkg.files);
       updated.set(selectedBlock.file, { ...file, text: nextText, blob: new Blob([nextText], { type: "text/html" }) });
       const nextPkg = refreshFile({ ...pkg, files: updated }, selectedBlock.file);
@@ -301,18 +323,12 @@ export default function App() {
         <button aria-label="Next page" className="rounded-full bg-teal-700 text-white w-11 h-11 text-2xl disabled:opacity-40" onClick={() => go(1)} disabled={pageIndex >= pages.length - 1}>→</button>
       </div>
 
-      {/* WYSIWYG section: the real course, in a sandboxed iframe */}
+      {/* WYSIWYG section: the real course, full-width scaled screenshot */}
       <main className="px-4 pb-2">
-        <div className="flex flex-wrap items-center justify-center gap-2 mb-2 text-sm">
-          <span className="text-slate-500">Frame:</span>
-          <button className={`rounded px-3 py-1 ${orientation === "landscape" ? "bg-teal-700 text-white" : "bg-white border"}`} onClick={() => setOrientation("landscape")}>Landscape (wide)</button>
-          <button className={`rounded px-3 py-1 ${orientation === "portrait" ? "bg-teal-700 text-white" : "bg-white border"}`} onClick={() => setOrientation("portrait")}>Portrait (narrow)</button>
-          <span className="text-slate-500 text-xs">Portrait keeps the MOOC's two-column layout — text will be small, exactly as on Moodle. Course Back/Next buttons are disabled in edit mode; use the arrows above.</span>
-        </div>
-        <div className="mx-auto" style={{ maxWidth: orientation === "portrait" ? 430 : 1100 }}>
-          <p className="text-xs text-slate-500 mb-1 text-center"><span className="inline-block w-3 h-3 border-2 border-red-600 align-middle mr-1" /> Red rectangle = editable. Click one, then edit it below. Parts without a red rectangle are not editable.</p>
+        <p className="text-xs text-slate-500 mb-2 text-center">Full-width preview: the whole MOOC page is shown at its desktop width and scaled to fit your screen — the same layout in portrait and landscape, no stretching. In portrait the text will be small; rotate your phone for a larger view. <span className="inline-block w-3 h-3 border-2 border-red-600 align-middle mx-1" /> Red rectangle = editable. Click one, then edit it below. Parts without a red rectangle are not editable. Course Back/Next buttons are disabled in edit mode; use the arrows above.</p>
+        <div ref={wrapRef} className="w-full" style={{ height: VIEW_H * scale, position: "relative", overflow: "hidden" }}>
           {previewUrl ? (
-            <iframe key={previewKey} title="Course WYSIWYG" sandbox="allow-scripts" src={previewUrl} className="w-full border rounded bg-white" style={{ height: orientation === "portrait" ? 760 : 680 }} />
+            <iframe key={previewKey} title="Course WYSIWYG" sandbox="allow-scripts" src={previewUrl} style={{ width: VIEW_W, height: VIEW_H, border: 0, position: "absolute", left: 0, top: 0, transform: `scale(${scale})`, transformOrigin: "0 0" }} />
           ) : (
             <p className="text-slate-500 text-center py-10">Loading the course page…</p>
           )}
