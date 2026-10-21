@@ -9,9 +9,23 @@ A second, page-first SCORM editor on the same GitHub account as
 Same engine, different interaction: instead of a side list of editable
 blocks, Editor 2 shows **one page at a time, in WYSIWYG form**, with
 **← → arrows** to move between pages. Every editable part is outlined in
-a **red box**. Click a red box, and its editor appears **under the page**:
-a text editor for text, an image-replacement panel for images. Parts
-without a red box are not editable, and the page says so.
+a **red rectangle**. Click a red rectangle, and its editor appears
+**under the page**: a text editor for text, an image-replacement panel
+for images. Parts without a red rectangle are not editable.
+
+Faithful rendering (updated 2026-10-21): the WYSIWYG is **the course
+itself**, rendered by its own HTML/CSS/JS inside a sandboxed iframe —
+not a reconstruction. For the SupBiotech course that means the lime
+frame, the logo and pills, the two-column grid (text card on the left,
+image card on the right), and the bottom bar, exactly as on Moodle.
+The earlier stacked reconstruction (text on top, image below, with
+jagged inline red outlines) is gone: red marks are now rectangles
+around whole containers (title, synthesis box, photo), and the
+course's own Back/Next buttons are disabled in edit mode so the iframe
+cannot silently leave the page the arrows selected. Use the
+**Landscape (wide) / Portrait (narrow)** frame toggle above the page:
+portrait keeps the MOOC's two-column layout, so text will be small —
+as on Moodle — rather than reflowing into a single column.
 
 Everything runs in your browser. No backend, account, database or paid API.
 Your SCORM ZIP is never uploaded to GitHub or any server.
@@ -33,15 +47,14 @@ Your SCORM ZIP is never uploaded to GitHub or any server.
 ## What a “page” is
 
 - **JavaScript courses (like the SupBiotech reference course):** one page
-  per lesson — Welcome, then Lesson 1 to Lesson 12. Each lesson page shows
-  its title, worksheet reference, “Remember that…” summary, lesson photo
-  and caption, quiz items, categories and questions, each in its own red
-  box where it is safely editable. Quiz type and points are shown without
-  a red box because they are not editable.
-- **Ordinary multi-page HTML courses:** one page per HTML file. The page
-  is rendered in a clean style (course scripts and styles are dropped so
-  they cannot break the editor), with editable text nodes and images in
-  red boxes.
+  per lesson — Welcome, then Lesson 1 to Lesson 12. The iframe is
+  navigated to that lesson's Read page via the course's own `jumpTo()`.
+  Editable parts on that page (title, summary, photo, caption, quiz
+  items where present) get red rectangles; quiz type and points have
+  none because they are not editable.
+- **Ordinary multi-page HTML courses:** one page per HTML file, rendered
+  by that file's own HTML/CSS/JS in the same sandboxed iframe, with red
+  rectangles injected on editable elements.
 
 ## What is editable, and what is not
 
@@ -75,9 +88,16 @@ external one is listed as a file in the manifest resource.
 ```bash
 npm install
 npm run dev
-npm run test    # 16 tests: manifest, JS literal parser, edits, ZIP round-trip, pages (Welcome + lessons, red-box wrapping, generic HTML)
+npm run test    # 18 tests: manifest, JS literal parser, edits, ZIP round-trip, pages, faithful-WYSIWYG injection script
 npm run build
 ```
+
+Faithful rendering was additionally verified locally (not committed,
+because it needs the reference ZIP) by running the real course in
+jsdom: Lesson 3 renders with two cards (text left, image right),
+the title, the Yamanaka synthesis container and the Nobel photo all
+carry red rectangles, and the synthesis rectangle is a container, not
+an inline span.
 
 ## Deployment
 
@@ -91,10 +111,10 @@ and pushing `dist/` to `gh-pages`.
 
 ## Limitations
 
-- The WYSIWYG page is a clean rendering of the editable content, not a
-  pixel-perfect copy of the course in an LMS. Always test the exported
-  ZIP in your LMS; preview in Editor 2 is the editable page itself, not
-  a sandboxed LMS simulation.
+- The WYSIWYG page is the course itself in a sandboxed iframe, which is
+  as close to Moodle as a browser preview can get — but it is still not
+  an LMS test. Always test the exported ZIP in your LMS before
+  classroom use.
 - Real LMS (Moodle) verification of exported packages is still outstanding.
 - No screenshots yet (no browser in the build environment to capture real
   ones).

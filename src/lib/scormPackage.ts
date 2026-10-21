@@ -128,8 +128,8 @@ export function resolveRelative(baseFile: string, ref: string): string {
  *   maps to its JS-data block by text match).
  * The result is meant for a sandboxed iframe (allow-scripts only).
  */
-export async function buildPreviewHtml(pkg: ScormPackage, onBlob?: (url: string) => void): Promise<string> {
-  const launch = pkg.manifest.launchHref ?? pkg.htmlFiles[0];
+export async function buildPreviewHtml(pkg: ScormPackage, onBlob?: (url: string, resolved: string) => void, fileOverride?: string): Promise<string> {
+  const launch = fileOverride ?? pkg.manifest.launchHref ?? pkg.htmlFiles[0];
   if (!launch) throw new Error("No HTML file to preview.");
   const file = pkg.files.get(launch) ?? pkg.files.get(decodeURIComponent(launch));
   if (!file?.text) throw new Error(`Launch file "${launch}" has no readable text content.`);
@@ -141,16 +141,20 @@ export async function buildPreviewHtml(pkg: ScormPackage, onBlob?: (url: string)
     if (!blobUrls.has(resolved)) {
       const url = URL.createObjectURL(f.blob);
       blobUrls.set(resolved, url);
-      onBlob?.(url);
+      onBlob?.(url, resolved);
     }
     return blobUrls.get(resolved)!;
   };
   let html = file.text;
-  // Rewrite src/href attributes pointing at local files.
+  // Rewrite src/href attributes pointing at local files. For src, keep the
+  // original path in data-original-src so Editor 2 can map a click on the
+  // (blob) image back to the package file it replaces.
   html = html.replace(/((?:src|href)\s*=\s*["'])([^"']+)(["'])/gi, (whole, pre, ref, post) => {
     if (isExternalUrl(ref) || ref.startsWith("data:") || ref.startsWith("#") || ref.startsWith("mailto:")) return whole;
     const url = urlFor(ref);
-    return url ? `${pre}${url}${post}` : whole;
+    if (!url) return whole;
+    const isSrc = /src/i.test(pre);
+    return isSrc ? `${pre}${url}${post} data-original-src="${ref}"` : `${pre}${url}${post}`;
   });
   // Rewrite url(...) in inline <style> blocks.
   html = html.replace(/url\(\s*(["']?)([^"')]+)\1\s*\)/gi, (whole, q, ref) => {

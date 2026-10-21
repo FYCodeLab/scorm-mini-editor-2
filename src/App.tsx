@@ -1,15 +1,15 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import DOMPurify from "dompurify";
-import { importZip, exportZip, refreshFile, resolveRelative, type ScormPackage } from "./lib/scormPackage";
+import { importZip, exportZip, refreshFile, buildPreviewHtml, type ScormPackage } from "./lib/scormPackage";
 import { applyEdits } from "./lib/editables";
 import { buildPages } from "./lib/pages";
 import { buildSampleZip } from "./lib/sample";
-import { isExternalUrl, safePath, svgLooksSafe } from "./lib/security";
+import { isExternalUrl, isImagePath, safePath, svgLooksSafe } from "./lib/security";
+import { buildEditor2Script } from "./lib/editor2Inject";
 import RichTextEditor from "./components/RichTextEditor";
 
 interface HistoryEntry { file: string; before: string; after: string; label: string; }
 const sanitizeRich = (html: string) => DOMPurify.sanitize(html, { ALLOWED_TAGS: ["b","strong","i","em","u","span","p","br","h2","h3","h4","ul","ol","li","a"], ALLOWED_ATTR: ["style","href","target"], FORBID_TAGS: ["script","style","iframe","form","img"] });
-const sanitizePage = (html: string) => DOMPurify.sanitize(html, { ALLOWED_TAGS: ["h1","h2","h3","p","span","div","section","ul","ol","li","img","em","strong","b","i","u","br","a"], ALLOWED_ATTR: ["class","data-block-id","data-image-src","src","alt","href","style"] });
 
 export default function App() {
   const [pkg, setPkg] = useState<ScormPackage | null>(null);
@@ -23,6 +23,9 @@ export default function App() {
   const [history, setHistory] = useState<HistoryEntry[]>([]);
   const [redoStack, setRedoStack] = useState<HistoryEntry[]>([]);
   const [dragOver, setDragOver] = useState(false);
+  const [previewUrl, setPreviewUrl] = useState<string | null>(null);
+  const [previewKey, setPreviewKey] = useState(0);
+  const [orientation, setOrientation] = useState<"landscape" | "portrait">("landscape");
   const fileInput = useRef<HTMLInputElement>(null);
   const replaceInput = useRef<HTMLInputElement>(null);
   const blobUrls = useRef<string[]>([]);
@@ -34,22 +37,76 @@ export default function App() {
   useEffect(() => { if (selectedBlock) setDraft(selectedBlock.value); }, [selectedBlock?.id]); // eslint-disable-line
   useEffect(() => () => { blobUrls.current.forEach((u) => URL.revokeObjectURL(u)); }, []);
 
-  // Rewrite local image srcs in the WYSIWYG HTML to Blob URLs from the package.
-  const pageHtml = useMemo(() => {
-    if (!pkg || !page) return "";
-    let html = sanitizePage(page.html);
-    if (!page.file) return html;
-    html = html.replace(/src="([^"]+)"/g, (whole, src: string) => {
-      if (isExternalUrl(src) || src.startsWith("blob:") || src.startsWith("data:")) return whole;
-      const resolved = resolveRelative(page.file, src);
-      const f = pkg.files.get(resolved);
-      if (!f?.blob) return whole;
-      const url = URL.createObjectURL(f.blob);
-      blobUrls.current.push(url);
-      return `src="${url}"`;
-    });
-    return html;
-  }, [pkg, page]);
+  const isJsCourse = pages.length > 0 && pages[0].id === "welcome";
+  // Faithful WYSIWYG: the course itself, rendered by its own HTML/CSS/JS
+  // in a sandboxed iframe, with red rectangles injected on top.
+  // For JS courses the iframe always loads the launch file and the
+  // injected script navigates it to the selected lesson (jumpTo).
+  // For generic courses it loads the selected HTML file directly.
+  useEffect(() => {
+    if (!pkg || !page) return;
+    let cancelled = false;
+    const localMap: Record<string, string> = {};
+    const blobMap: Record<string, string> = {};
+    for (const path of pkg.fileList.filter(isImagePath)) {
+      const f = pkg.files.get(path);
+      if (f?.blob) {
+        const url = URL.createObjectURL(f.blob);
+        blobUrls.current.push(url);
+        localMap[path.split("/").pop()!] = url;
+      }
+    }
+    const lesson = isJsCourse ? pageIndex - 1 : null;
+    const pageBlocks = isJsCourse
+      ? pkg.blocks.filter((b) => {
+          if (lesson === -1) return b.kind === "html-title";
+          const L = (lesson ?? 0) + 1;
+          return b.label.startsWith(`Lesson ${L} ·`) || b.label === `readPhotos[${lesson}] · caption`;
+        })
+      : pkg.blocks.filter((b) => b.file === page.file);
+    const pageImages = isJsCourse
+      ? pkg.images.filter((im) => {
+          if (lesson === -1) return im.context === "imageUrls.welcome";
+          return im.context === `readPhotos[${lesson}] · image` || im.context.startsWith("imageUrls.");
+        })
+      : pkg.images.filter((im) => im.file === page.file);
+    // Deduplicate images by src for the injected script.
+    const seenImg = new Set<string>();
+    const uniqImages = pageImages.filter((im) => { if (seenImg.has(im.src)) return false; seenImg.add(im.src); return true; });
+    buildPreviewHtml(pkg, (url, resolved) => { blobUrls.current.push(url); blobMap[url] = resolved; }, isJsCourse ? undefined : page.file)
+      .then((html) => {
+        if (cancelled) return;
+        const script = buildEditor2Script({
+          lesson,
+          blocks: pageBlocks.map((b) => ({ id: b.id, text: b.value })),
+          images: uniqImages.map((im) => ({ src: im.src })),
+          localMap,
+          blobMap,
+        });
+        const withScript = /<\/body>/i.test(html) ? html.replace(/<\/body>/i, `${script}</body>`) : html + script;
+        const url = URL.createObjectURL(new Blob([withScript], { type: "text/html" }));
+        blobUrls.current.push(url);
+        setPreviewUrl(url);
+        setPreviewKey((k) => k + 1);
+      })
+      .catch((e) => { if (!cancelled) setError(e instanceof Error ? e.message : String(e)); });
+    return () => { cancelled = true; };
+  }, [pkg, page, pageIndex, isJsCourse]);
+
+  // Messages from the iframe: red-box clicks.
+  useEffect(() => {
+    const handler = (e: MessageEvent) => {
+      if (e.data?.type === "e2-select-block" && typeof e.data.id === "string") {
+        setSelectedId(e.data.id); setSelectedImage(null);
+        document.getElementById("editor-below")?.scrollIntoView({ behavior: "smooth", block: "start" });
+      } else if (e.data?.type === "e2-select-image" && typeof e.data.src === "string") {
+        setSelectedImage(e.data.src); setSelectedId(null);
+        document.getElementById("editor-below")?.scrollIntoView({ behavior: "smooth", block: "start" });
+      }
+    };
+    window.addEventListener("message", handler);
+    return () => window.removeEventListener("message", handler);
+  }, []);
 
   const loadBlob = useCallback(async (blob: Blob, name: string) => {
     setBusy(true); setError(null); setNotice(null);
@@ -76,15 +133,6 @@ export default function App() {
     window.addEventListener("keydown", h);
     return () => window.removeEventListener("keydown", h);
   });
-
-  const onWysiwygClick = (e: React.MouseEvent<HTMLDivElement>) => {
-    const el = (e.target as HTMLElement).closest?.("[data-block-id], [data-image-src]") as HTMLElement | null;
-    if (!el) { setSelectedId(null); setSelectedImage(null); return; }
-    const blockId = el.getAttribute("data-block-id");
-    if (blockId) { setSelectedId(blockId); setSelectedImage(null); return; }
-    const src = el.getAttribute("data-image-src");
-    if (src) { setSelectedImage(src); setSelectedId(null); }
-  };
 
   const applyBlockEdit = () => {
     if (!pkg || !selectedBlock) return;
@@ -133,6 +181,17 @@ export default function App() {
     if (/\.svg$/i.test(f.name) && !svgLooksSafe(await f.text())) { setError("This SVG contains scripts or event handlers and was rejected for safety."); return; }
     const updated = new Map(pkg.files);
     const refs = pkg.images.filter((im) => im.src === selectedImage);
+    // A local file clicked in the real course rendering (logo, or a
+    // JS-template image like culture_dish_reference.png) may have no
+    // ImageRef entry at all. If the path exists in the package, replace
+    // the file itself — that is the correct local replacement.
+    if (pkg.files.has(selectedImage) || [...pkg.files.keys()].some((k) => k.endsWith("/" + selectedImage))) {
+      const path = pkg.files.has(selectedImage) ? selectedImage : [...pkg.files.keys()].find((k) => k.endsWith("/" + selectedImage))!;
+      updated.set(path, { path, text: null, blob: f, isBinary: true });
+      setPkg({ ...pkg, files: updated }); setNotice(`Replaced ${selectedImage}.`);
+      setSelectedImage(null);
+      return;
+    }
     if (refs.length && refs[0].local) {
       const resolved = selectedImage.startsWith("/") ? selectedImage.slice(1) : selectedImage;
       const path = pkg.files.has(resolved) ? resolved : [...pkg.files.keys()].find((k) => k.endsWith("/" + resolved)) ?? resolved;
@@ -144,6 +203,17 @@ export default function App() {
       while (updated.has(filename)) { const dot = filename.lastIndexOf("."); filename = `${filename.slice(0, dot)}-${n}${filename.slice(dot)}`; n++; }
       updated.set(filename, { path: filename, text: null, blob: f, isBinary: true });
       const filesToFix = new Set(refs.map((im) => im.file));
+      // Fallback for template images with no offset entry: replace every
+      // occurrence of the URL string in every HTML file.
+      if (filesToFix.size === 0 && isExternalUrl(selectedImage)) {
+        for (const hf of pkg.htmlFiles) {
+          const hfFile = updated.get(hf);
+          if (hfFile?.text && hfFile.text.includes(selectedImage)) {
+            const text = hfFile.text.split(selectedImage).join(filename);
+            updated.set(hf, { ...hfFile, text, blob: new Blob([text], { type: "text/html" }) });
+          }
+        }
+      }
       for (const hf of filesToFix) {
         const hfFile = updated.get(hf); if (!hfFile?.text) continue;
         const r = pkg.images.filter((im) => im.file === hf && im.src === selectedImage).sort((a, b) => b.start - a.start);
@@ -152,7 +222,12 @@ export default function App() {
         updated.set(hf, { ...hfFile, text, blob: new Blob([text], { type: "text/html" }) });
       }
       const firstFile = refs[0]?.file ?? page?.file;
-      const nextPkg = firstFile ? refreshFile({ ...pkg, files: updated }, firstFile) : { ...pkg, files: updated };
+      let nextPkg = firstFile ? refreshFile({ ...pkg, files: updated }, firstFile) : { ...pkg, files: updated };
+      // If the fallback rewrote other HTML files, recompute their blocks
+      // too, so later edits on those files do not use stale offsets.
+      if (filesToFix.size === 0 && isExternalUrl(selectedImage)) {
+        for (const hf of pkg.htmlFiles) nextPkg = refreshFile(nextPkg, hf);
+      }
       const mf = nextPkg.files.get("imsmanifest.xml");
       if (mf?.text && !mf.text.includes(`href="${filename}"`)) {
         const patched = mf.text.replace(/(<\/resource>)/i, `  <file href="${filename}"/>\n$1`);
@@ -203,7 +278,6 @@ export default function App() {
 
   return (
     <div className="min-h-screen bg-slate-50 text-slate-800 flex flex-col">
-      <style>{`.ed{outline:2px solid #dc2626;outline-offset:2px;border-radius:2px;cursor:pointer;background:rgba(220,38,38,0.06)} .ed:hover,.ed.selected{outline-width:3px;background:rgba(220,38,38,0.12)} .imgwrap{display:inline-block;outline:2px solid #dc2626;outline-offset:2px;border-radius:4px;cursor:pointer} .imgwrap img{max-width:100%;display:block} .card{background:white;border:1px solid #dce7c9;border-radius:12px;padding:14px} .subtitle{color:#536a77;font-size:13px} .credit{font-size:11px;color:#66777c}`}</style>
       <header className="bg-teal-900 text-white px-4 py-3 flex flex-wrap gap-2 items-center">
         <div className="mr-2"><div className="font-bold leading-tight">SCORM Mini Editor 2</div><div className="text-xs text-teal-200">{pkg.name} · SCORM {pkg.manifest.scormVersion}</div></div>
         <input ref={fileInput} type="file" accept=".zip" className="hidden" onChange={(e) => { const f = e.target.files?.[0]; if (f) onDropFile(f); }} />
@@ -227,17 +301,27 @@ export default function App() {
         <button aria-label="Next page" className="rounded-full bg-teal-700 text-white w-11 h-11 text-2xl disabled:opacity-40" onClick={() => go(1)} disabled={pageIndex >= pages.length - 1}>→</button>
       </div>
 
-      {/* WYSIWYG section */}
+      {/* WYSIWYG section: the real course, in a sandboxed iframe */}
       <main className="px-4 pb-2">
-        <div className="max-w-4xl mx-auto rounded-xl border-[10px] border-[#bfd753] bg-[#fbfdf7] p-5 min-h-[320px]">
-          <p className="text-xs text-slate-500 mb-3"><span className="inline-block w-3 h-3 border-2 border-red-600 align-middle mr-1" /> Red box = editable. Click a red box, then edit it in the section below. Parts without a red box are not editable.</p>
-          <div onClick={onWysiwygClick} dangerouslySetInnerHTML={{ __html: pageHtml }} />
+        <div className="flex flex-wrap items-center justify-center gap-2 mb-2 text-sm">
+          <span className="text-slate-500">Frame:</span>
+          <button className={`rounded px-3 py-1 ${orientation === "landscape" ? "bg-teal-700 text-white" : "bg-white border"}`} onClick={() => setOrientation("landscape")}>Landscape (wide)</button>
+          <button className={`rounded px-3 py-1 ${orientation === "portrait" ? "bg-teal-700 text-white" : "bg-white border"}`} onClick={() => setOrientation("portrait")}>Portrait (narrow)</button>
+          <span className="text-slate-500 text-xs">Portrait keeps the MOOC's two-column layout — text will be small, exactly as on Moodle. Course Back/Next buttons are disabled in edit mode; use the arrows above.</span>
+        </div>
+        <div className="mx-auto" style={{ maxWidth: orientation === "portrait" ? 430 : 1100 }}>
+          <p className="text-xs text-slate-500 mb-1 text-center"><span className="inline-block w-3 h-3 border-2 border-red-600 align-middle mr-1" /> Red rectangle = editable. Click one, then edit it below. Parts without a red rectangle are not editable.</p>
+          {previewUrl ? (
+            <iframe key={previewKey} title="Course WYSIWYG" sandbox="allow-scripts" src={previewUrl} className="w-full border rounded bg-white" style={{ height: orientation === "portrait" ? 760 : 680 }} />
+          ) : (
+            <p className="text-slate-500 text-center py-10">Loading the course page…</p>
+          )}
           {!page && <p className="text-slate-500">No pages found in this package.</p>}
         </div>
       </main>
 
       {/* Editor below the WYSIWYG section */}
-      <section className="px-4 pb-6">
+      <section id="editor-below" className="px-4 pb-6">
         <div className="max-w-4xl mx-auto rounded border bg-white p-4">
           {selectedBlock ? (
             <>
