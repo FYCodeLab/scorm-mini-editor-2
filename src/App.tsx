@@ -11,6 +11,25 @@ import RichTextEditor from "./components/RichTextEditor";
 interface HistoryEntry { file: string; before: string; after: string; label: string; }
 const sanitizeRich = (html: string) => DOMPurify.sanitize(html, { ALLOWED_TAGS: ["b","strong","i","em","u","span","p","br","h2","h3","h4","ul","ol","li","a"], ALLOWED_ATTR: ["style","href","target"], FORBID_TAGS: ["script","style","iframe","form","img"] });
 
+// Shared FYCodeLab upper banner, same structure as SafeSeal and the other
+// fycodelab.github.io sites: the shared navbar.html, fetched once and
+// injected into #navbar-container (the shared navbar.js does exactly
+// this, but it must run after React has mounted the container, so the
+// fetch is done here instead of via a static <script> tag). If the
+// fetch fails (offline), the banner is simply absent and the app works.
+let navbarHtmlCache: string | null = null;
+function FyNavbar() {
+  const ref = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (navbarHtmlCache) { if (ref.current) ref.current.innerHTML = navbarHtmlCache; return; }
+    fetch("https://fycodelab.github.io/assets/navbar.html")
+      .then((r) => { if (!r.ok) throw new Error(String(r.status)); return r.text(); })
+      .then((html) => { navbarHtmlCache = html; if (ref.current) ref.current.innerHTML = html; })
+      .catch(() => { /* banner is decorative; never break the app */ });
+  }, []);
+  return <div id="navbar-container" ref={ref} />;
+}
+
 export default function App() {
   const [pkg, setPkg] = useState<ScormPackage | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -277,6 +296,7 @@ export default function App() {
   if (!pkg) {
     return (
       <div className="min-h-screen bg-slate-50 text-slate-800">
+        <FyNavbar />
         <header className="bg-teal-900 text-white px-6 py-5">
           <h1 className="text-2xl font-bold">SCORM Mini Editor 2 — Page Editor</h1>
           <p className="text-teal-100">One page at a time, in WYSIWYG. Editable parts are outlined in red — click one, then edit it below. No account, no server upload: everything runs on your computer.</p>
@@ -292,7 +312,6 @@ export default function App() {
             <button className="mt-2 rounded bg-teal-700 px-5 py-2.5 text-white font-semibold" onClick={() => fileInput.current?.click()} disabled={busy}>{busy ? "Importing…" : "Import SCORM ZIP"}</button>
             <div className="mt-3"><button className="text-teal-700 underline" onClick={async () => { const b = await buildSampleZip(); void loadBlob(b, "sample-scorm.zip"); }}>Or try the built-in demo course (no file needed)</button></div>
           </div>
-          <p className="mt-6 text-sm text-slate-500">Difference from Editor 1: Editor 1 lists editable blocks in a side panel. Editor 2 shows the page itself, with editable parts in red, and the editor underneath. Same import/export engine, same manifest preservation, same limits: template-generated text without a red box is not editable, and preview here is the editable page itself — always test the exported ZIP in your real LMS before classroom use.</p>
         </main>
         <footer className="px-4 py-3 text-right text-xs text-slate-400">Made by FYCodeLab</footer>
       </div>
@@ -301,6 +320,7 @@ export default function App() {
 
   return (
     <div className="min-h-screen bg-slate-50 text-slate-800 flex flex-col">
+      <FyNavbar />
       <header className="bg-teal-900 text-white px-4 py-3 flex flex-wrap gap-2 items-center">
         <div className="mr-2"><div className="font-bold leading-tight">SCORM Mini Editor 2</div><div className="text-xs text-teal-200">{pkg.name} · SCORM {pkg.manifest.scormVersion}</div></div>
         <input ref={fileInput} type="file" accept=".zip" className="hidden" onChange={(e) => { const f = e.target.files?.[0]; if (f) onDropFile(f); }} />
