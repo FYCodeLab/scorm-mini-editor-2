@@ -294,6 +294,7 @@ export default function App() {
           </div>
           <p className="mt-6 text-sm text-slate-500">Difference from Editor 1: Editor 1 lists editable blocks in a side panel. Editor 2 shows the page itself, with editable parts in red, and the editor underneath. Same import/export engine, same manifest preservation, same limits: template-generated text without a red box is not editable, and preview here is the editable page itself — always test the exported ZIP in your real LMS before classroom use.</p>
         </main>
+        <footer className="px-4 py-3 text-right text-xs text-slate-400">Made by FYCodeLab</footer>
       </div>
     );
   }
@@ -325,7 +326,7 @@ export default function App() {
 
       {/* WYSIWYG section: the real course, full-width scaled screenshot */}
       <main className="px-4 pb-2">
-        <p className="text-xs text-slate-500 mb-2 text-center">Full-width preview: the whole MOOC page is shown at its desktop width and scaled to fit your screen — the same layout in portrait and landscape, no stretching. In portrait the text will be small; rotate your phone for a larger view. <span className="inline-block w-3 h-3 border-2 border-red-600 align-middle mx-1" /> Red rectangle = editable. Click one, then edit it below. Parts without a red rectangle are not editable. Course Back/Next buttons are disabled in edit mode; use the arrows above.</p>
+        <p className="text-xs text-slate-500 mb-2 text-center">Red rectangle = editable. Click one, then edit it below.</p>
         <div ref={wrapRef} className="w-full" style={{ height: VIEW_H * scale, position: "relative", overflow: "hidden" }}>
           {previewUrl ? (
             <iframe key={previewKey} title="Course WYSIWYG" sandbox="allow-scripts" src={previewUrl} style={{ width: VIEW_W, height: VIEW_H, border: 0, position: "absolute", left: 0, top: 0, transform: `scale(${scale})`, transformOrigin: "0 0" }} />
@@ -361,10 +362,11 @@ export default function App() {
               <p className="text-xs text-slate-500 mt-2">Local replacement keeps the file name; an external replacement is added as a new local file and the URL is rewritten everywhere it appears.</p>
             </>
           ) : (
-            <p className="text-slate-500">Click a <span className="text-red-600 font-semibold">red box</span> in the page above. Its text or image editor will appear here, under the page.</p>
+            <h2 className="font-bold">Text/image editor ⬇️</h2>
           )}
         </div>
       </section>
+      <footer className="mt-auto px-4 py-3 text-right text-xs text-slate-400">Made by FYCodeLab</footer>
     </div>
   );
 }
